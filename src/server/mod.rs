@@ -23,8 +23,9 @@ use crate::plan::{ImplContext, Implementable};
 use crate::sinks::Sink;
 use crate::sources::{Source, Sourceable, SourcingContext};
 use crate::Rule;
-use crate::{implement, implement_neu, AttributeConfig, RelationHandle, ShutdownHandle};
-use crate::{Aid, Error, Rewind, Time, TxData, Value};
+use crate::{AsValue, AsAid};
+use crate::{implement, AttributeConfig, RelationHandle, ShutdownHandle};
+use crate::{Error, Rewind, Time, TxData};
 use crate::{TraceKeyHandle, TraceValHandle};
 
 pub mod scheduler;
@@ -89,9 +90,13 @@ impl std::convert::From<&Interest> for crate::sinks::SinkingContext {
 /// A request with the intent of synthesising one or more new rules
 /// and optionally publishing one or more of them.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Register {
+pub struct Register<A, V>
+where
+    A: AsAid,
+    V: AsValue,
+{
     /// A list of rules to synthesise in order.
-    pub rules: Vec<Rule>,
+    pub rules: Vec<Rule<A, V>>,
     /// The names of rules that should be published.
     pub publish: Vec<String>,
 }
@@ -109,7 +114,11 @@ pub struct CreateAttribute {
 
 /// Possible request types.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub enum Request {
+pub enum Request<A, V>
+where
+    A: AsAid,
+    V: AsValue,
+{
     /// Sends inputs via one or more registered handles.
     Transact(Vec<TxData>),
     /// Expresses interest in a named relation.
@@ -119,7 +128,7 @@ pub enum Request {
     /// dataflow can be cleaned up.
     Uninterest(String),
     /// Registers one or more named relations.
-    Register(Register),
+    Register(Register<A, V>),
     /// A request with the intent of attaching to an external data
     /// source that publishes one or more attributes and relations.
     RegisterSource(Source),
@@ -146,8 +155,10 @@ pub enum Request {
 
 /// Server context maintaining globally registered arrangements and
 /// input handles.
-pub struct Server<T, Token>
+pub struct Server<A, V, T, Token>
 where
+    A: AsAid,
+    V: AsValue,
     T: Timestamp + Lattice,
     Token: Hash + Eq + Copy,
 {
@@ -157,7 +168,7 @@ where
     /// (copied from worker).
     pub t0: Instant,
     /// Implementation context.
-    pub context: Context<T>,
+    pub context: Context<A, V, T>,
     /// Mapping from query names to interested client tokens.
     pub interests: HashMap<String, HashSet<Token>>,
     // Mapping from query names to their shutdown handles.
@@ -173,23 +184,27 @@ where
 }
 
 /// Implementation context.
-pub struct Context<T>
+pub struct Context<A, V, T>
 where
+    V: AsValue,
+    A: AsAid,
     T: Timestamp + Lattice,
 {
     /// Representation of named rules.
-    pub rules: HashMap<Aid, Rule>,
+    pub rules: HashMap<A, Rule<A, V>>,
     /// Set of rules known to be underconstrained.
-    pub underconstrained: HashSet<Aid>,
+    pub underconstrained: HashSet<A>,
     /// Internal domain of command sequence numbers.
-    pub internal: Domain<T>,
+    pub internal: Domain<V, T>,
 }
 
-impl<T> ImplContext<T> for Context<T>
+impl<A, V, T> ImplContext<A, V, T> for Context<A, V, T>
 where
+    A: AsAid,
+    V: AsValue,
     T: Timestamp + Lattice,
 {
-    fn rule(&self, name: &str) -> Option<&Rule> {
+    fn rule(&self, name: &str) -> Option<&Rule<A, V>> {
         self.rules.get(name)
     }
 
@@ -201,39 +216,39 @@ where
         self.internal.attributes.contains_key(name)
     }
 
-    fn forward_count(&mut self, name: &str) -> Option<&mut TraceKeyHandle<Value, T, isize>> {
+    fn forward_count(&mut self, name: &str) -> Option<&mut TraceKeyHandle<V, T, isize>> {
         self.internal.forward_count.get_mut(name)
     }
 
     fn forward_propose(
         &mut self,
         name: &str,
-    ) -> Option<&mut TraceValHandle<Value, Value, T, isize>> {
+    ) -> Option<&mut TraceValHandle<V, V, T, isize>> {
         self.internal.forward_propose.get_mut(name)
     }
 
     fn forward_validate(
         &mut self,
         name: &str,
-    ) -> Option<&mut TraceKeyHandle<(Value, Value), T, isize>> {
+    ) -> Option<&mut TraceKeyHandle<(V, V), T, isize>> {
         self.internal.forward_validate.get_mut(name)
     }
 
-    fn reverse_count(&mut self, name: &str) -> Option<&mut TraceKeyHandle<Value, T, isize>> {
+    fn reverse_count(&mut self, name: &str) -> Option<&mut TraceKeyHandle<V, T, isize>> {
         self.internal.reverse_count.get_mut(name)
     }
 
     fn reverse_propose(
         &mut self,
         name: &str,
-    ) -> Option<&mut TraceValHandle<Value, Value, T, isize>> {
+    ) -> Option<&mut TraceValHandle<V, V, T, isize>> {
         self.internal.reverse_propose.get_mut(name)
     }
 
     fn reverse_validate(
         &mut self,
         name: &str,
-    ) -> Option<&mut TraceKeyHandle<(Value, Value), T, isize>> {
+    ) -> Option<&mut TraceKeyHandle<(V, V), T, isize>> {
         self.internal.reverse_validate.get_mut(name)
     }
 
@@ -243,8 +258,10 @@ where
     }
 }
 
-impl<T, Token> Server<T, Token>
+impl<A, V, T, Token> Server<A, V, T, Token>
 where
+    A: AsAid,
+    V: AsValue,
     T: Timestamp + Lattice + Default + Rewind,
     Token: Hash + Eq + Copy,
 {
@@ -278,7 +295,7 @@ where
     }
 
     /// Returns commands to install built-in plans.
-    pub fn builtins() -> Vec<Request> {
+    pub fn builtins() -> Vec<Request<A, V>> {
         vec![
             // Request::CreateAttribute(CreateAttribute {
             //     name: "df.pattern/e".to_string(),
@@ -322,7 +339,7 @@ where
         &mut self,
         name: &str,
         scope: &mut S,
-    ) -> Result<Collection<S, Vec<Value>, isize>, Error> {
+    ) -> Result<Collection<S, Vec<V>, isize>, Error> {
         // We need to do a `contains_key` here to avoid taking
         // a mut ref on context.
         if self.context.internal.arrangements.contains_key(name) {
@@ -337,7 +354,8 @@ where
             Ok(relation)
         } else {
             let (mut rel_map, shutdown_handle) = if self.config.enable_optimizer {
-                implement_neu(name, scope, &mut self.context)?
+                unimplemented!();
+                // implement_neu(name, scope, &mut self.context)?
             } else {
                 implement(name, scope, &mut self.context)?
             };
@@ -364,7 +382,7 @@ where
     }
 
     /// Handle a Register request.
-    pub fn register(&mut self, req: Register) -> Result<(), Error> {
+    pub fn register(&mut self, req: Register<A, V>) -> Result<(), Error> {
         let Register { rules, .. } = req;
 
         for rule in rules.into_iter() {
@@ -377,7 +395,7 @@ where
                     let mut data = rule.plan.datafy();
                     let tx_data: Vec<TxData> = data
                         .drain(..)
-                        .map(|(e, a, v)| TxData(1, Value::Eid(e), a, v, None))
+                        .map(|(e, a, v)| TxData(1, e, a, v, None))
                         .collect();
 
                     self.transact(tx_data, 0, 0)?;
@@ -487,8 +505,8 @@ where
     pub fn test_single<S: Scope<Timestamp = T>>(
         &mut self,
         scope: &mut S,
-        rule: Rule,
-    ) -> Collection<S, Vec<Value>, isize> {
+        rule: Rule<A, V>,
+    ) -> Collection<S, Vec<V>, isize> {
         let interest_name = rule.name.clone();
         let publish_name = rule.name.clone();
 
@@ -505,12 +523,14 @@ where
     }
 }
 
-impl<Token> Server<Duration, Token>
+impl<A, V, Token> Server<A, V, Duration, Token>
 where
+    A: AsAid,
+    V: AsValue,
     Token: Hash + Eq + Copy,
 {
     /// Registers loggers for use in the various logging sources.
-    pub fn enable_logging<A: Allocate>(&self, worker: &mut Worker<A>) -> Result<(), Error> {
+    pub fn enable_logging<Al: Allocate>(&self, worker: &mut Worker<Al>) -> Result<(), Error> {
         let mut timely_logger = BatchLogger::new(self.timely_events.clone().unwrap());
         worker
             .log_register()
@@ -529,7 +549,7 @@ where
     }
 
     /// Unregisters loggers.
-    pub fn shutdown_logging<A: Allocate>(&self, worker: &mut Worker<A>) -> Result<(), Error> {
+    pub fn shutdown_logging<Al: Allocate>(&self, worker: &mut Worker<Al>) -> Result<(), Error> {
         worker
             .log_register()
             .insert::<TimelyEvent, _>("timely", move |_time, _data| {});

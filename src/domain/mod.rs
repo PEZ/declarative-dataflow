@@ -15,10 +15,11 @@ use differential_dataflow::trace::TraceReader;
 use differential_dataflow::AsCollection;
 
 use crate::operators::CardinalityOne;
-use crate::{Aid, Error, Rewind, TxData, Value};
+use crate::{Aid, Error, Rewind, TxData};
 use crate::{AttributeConfig, IndexDirection, InputSemantics, QuerySupport};
 use crate::{RelationConfig, RelationHandle};
 use crate::{TraceKeyHandle, TraceValHandle};
+use crate::AsValue;
 
 mod unordered_session;
 use unordered_session::UnorderedSession;
@@ -44,13 +45,13 @@ use unordered_session::UnorderedSession;
 /// attributes must be automatically advanced in lockstep with a
 /// high-watermark of all timeful domain inputs. This ensures that
 /// they will never block overall progress.
-pub struct Domain<T: Timestamp + Lattice> {
+pub struct Domain<V: AsValue, T: Timestamp + Lattice> {
     /// The current input epoch.
     now_at: T,
     /// Last trace advance.
     last_advance: Vec<T>,
     /// Input handles to attributes in this domain.
-    input_sessions: HashMap<String, UnorderedSession<T, (Value, Value), isize>>,
+    input_sessions: HashMap<String, UnorderedSession<T, (V, V), isize>>,
     /// The probe keeping track of source progress in this domain.
     domain_probe: ProbeHandle<T>,
     /// Maintaining the number of probed sources allows us to
@@ -60,25 +61,26 @@ pub struct Domain<T: Timestamp + Lattice> {
     /// Configurations for attributes in this domain.
     pub attributes: HashMap<Aid, AttributeConfig>,
     /// Forward count traces.
-    pub forward_count: HashMap<Aid, TraceKeyHandle<Value, T, isize>>,
+    pub forward_count: HashMap<Aid, TraceKeyHandle<V, T, isize>>,
     /// Forward propose traces.
-    pub forward_propose: HashMap<Aid, TraceValHandle<Value, Value, T, isize>>,
+    pub forward_propose: HashMap<Aid, TraceValHandle<V, V, T, isize>>,
     /// Forward validate traces.
-    pub forward_validate: HashMap<Aid, TraceKeyHandle<(Value, Value), T, isize>>,
+    pub forward_validate: HashMap<Aid, TraceKeyHandle<(V, V), T, isize>>,
     /// Reverse count traces.
-    pub reverse_count: HashMap<Aid, TraceKeyHandle<Value, T, isize>>,
+    pub reverse_count: HashMap<Aid, TraceKeyHandle<V, T, isize>>,
     /// Reverse propose traces.
-    pub reverse_propose: HashMap<Aid, TraceValHandle<Value, Value, T, isize>>,
+    pub reverse_propose: HashMap<Aid, TraceValHandle<V, V, T, isize>>,
     /// Reverse validate traces.
-    pub reverse_validate: HashMap<Aid, TraceKeyHandle<(Value, Value), T, isize>>,
+    pub reverse_validate: HashMap<Aid, TraceKeyHandle<(V, V), T, isize>>,
     /// Configuration for relations in this domain.
     pub relations: HashMap<Aid, RelationConfig>,
     /// Relation traces.
     pub arrangements: HashMap<Aid, RelationHandle<T>>,
 }
 
-impl<T> Domain<T>
+impl<V, T> Domain<V, T>
 where
+    V: AsValue,
     T: Timestamp + Lattice + Rewind,
 {
     /// Creates a new domain.
@@ -108,7 +110,7 @@ where
         &mut self,
         name: &str,
         config: AttributeConfig,
-        pairs: &Stream<S, ((Value, Value), T, isize)>,
+        pairs: &Stream<S, ((V, V), T, isize)>,
     ) -> Result<(), Error> {
         if self.attributes.contains_key(name) {
             Err(Error::conflict(format!(
@@ -207,7 +209,7 @@ where
         scope: &mut S,
     ) -> Result<(), Error> {
         let pairs = {
-            let ((handle, cap), pairs) = scope.new_unordered_input::<((Value, Value), T, isize)>();
+            let ((handle, cap), pairs) = scope.new_unordered_input::<((V, V), T, isize)>();
             let session = UnorderedSession::from(handle, cap);
 
             self.input_sessions.insert(name.to_string(), session);
@@ -228,7 +230,7 @@ where
         &mut self,
         name: &str,
         config: AttributeConfig,
-        pairs: &Stream<S, ((Value, Value), T, isize)>,
+        pairs: &Stream<S, ((V, V), T, isize)>,
     ) -> Result<(), Error> {
         // We need to install a probe on source-fed attributes in
         // order to determine their progress.

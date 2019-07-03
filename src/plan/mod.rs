@@ -13,50 +13,45 @@ use differential_dataflow::lattice::Lattice;
 use differential_dataflow::trace::TraceReader;
 
 use crate::binding::{AsBinding, AttributeBinding, Binding};
-use crate::Rule;
-use crate::{Aid, Eid, Value, Var};
+use crate::{AsAid, AsValue};
+use crate::{Rule, Var};
 use crate::{
     CollectionRelation, Implemented, Relation, RelationHandle, ShutdownHandle, VariableMap,
 };
 use crate::{TraceKeyHandle, TraceValHandle};
 
-#[cfg(feature = "set-semantics")]
-pub mod aggregate;
-#[cfg(not(feature = "set-semantics"))]
-pub mod aggregate_neu;
-pub mod antijoin;
-pub mod filter;
-#[cfg(feature = "graphql")]
-pub mod graphql;
-pub mod hector;
+// #[cfg(feature = "set-semantics")]
+// pub mod aggregate;
+// #[cfg(not(feature = "set-semantics"))]
+// pub mod aggregate_neu;
+// pub mod antijoin;
+// pub mod filter;
+// #[cfg(feature = "graphql")]
+// pub mod graphql;
+// pub mod hector;
 pub mod join;
-pub mod project;
-pub mod pull;
-pub mod transform;
-pub mod union;
+// pub mod project;
+// pub mod pull;
+// pub mod transform;
+// pub mod union;
 
-#[cfg(feature = "set-semantics")]
-pub use self::aggregate::{Aggregate, AggregationFn};
-#[cfg(not(feature = "set-semantics"))]
-pub use self::aggregate_neu::{Aggregate, AggregationFn};
-pub use self::antijoin::Antijoin;
-pub use self::filter::{Filter, Predicate};
-#[cfg(feature = "graphql")]
-pub use self::graphql::GraphQl;
-pub use self::hector::Hector;
+// #[cfg(feature = "set-semantics")]
+// pub use self::aggregate::{Aggregate, AggregationFn};
+// #[cfg(not(feature = "set-semantics"))]
+// pub use self::aggregate_neu::{Aggregate, AggregationFn};
+// pub use self::antijoin::Antijoin;
+// pub use self::filter::{Filter, Predicate};
+// #[cfg(feature = "graphql")]
+// pub use self::graphql::GraphQl;
+// pub use self::hector::Hector;
 pub use self::join::Join;
-pub use self::project::Project;
-pub use self::pull::{Pull, PullAll, PullLevel};
-pub use self::transform::{Function, Transform};
-pub use self::union::Union;
+// pub use self::project::Project;
+// pub use self::pull::{Pull, PullAll, PullLevel};
+// pub use self::transform::{Function, Transform};
+// pub use self::union::Union;
 
 static ID: AtomicUsize = AtomicUsize::new(0);
 static SYM: AtomicUsize = AtomicUsize::new(std::usize::MAX);
-
-/// @FIXME
-pub fn next_id() -> Eid {
-    ID.fetch_add(1, atomic::Ordering::SeqCst) as Eid
-}
 
 /// @FIXME
 pub fn gensym() -> Var {
@@ -65,12 +60,14 @@ pub fn gensym() -> Var {
 
 /// A thing that can provide global state required during the
 /// implementation of plans.
-pub trait ImplContext<T>
+pub trait ImplContext<A, V, T>
 where
+    A: AsAid,
+    V: AsValue,
     T: Timestamp + Lattice,
 {
     /// Returns the definition for the rule of the given name.
-    fn rule(&self, name: &str) -> Option<&Rule>;
+    fn rule(&self, name: &str) -> Option<&Rule<A, V>>;
 
     /// Returns a mutable reference to a (non-base) relation, if one
     /// is registered under the given name.
@@ -80,34 +77,34 @@ where
     fn has_attribute(&self, name: &str) -> bool;
 
     /// Retrieves the forward count trace for the specified aid.
-    fn forward_count(&mut self, name: &str) -> Option<&mut TraceKeyHandle<Value, T, isize>>;
+    fn forward_count(&mut self, name: &str) -> Option<&mut TraceKeyHandle<V, T, isize>>;
 
     /// Retrieves the forward propose trace for the specified aid.
     fn forward_propose(
         &mut self,
         name: &str,
-    ) -> Option<&mut TraceValHandle<Value, Value, T, isize>>;
+    ) -> Option<&mut TraceValHandle<V, V, T, isize>>;
 
     /// Retrieves the forward validate trace for the specified aid.
     fn forward_validate(
         &mut self,
         name: &str,
-    ) -> Option<&mut TraceKeyHandle<(Value, Value), T, isize>>;
+    ) -> Option<&mut TraceKeyHandle<(V, V), T, isize>>;
 
     /// Retrieves the reverse count trace for the specified aid.
-    fn reverse_count(&mut self, name: &str) -> Option<&mut TraceKeyHandle<Value, T, isize>>;
+    fn reverse_count(&mut self, name: &str) -> Option<&mut TraceKeyHandle<V, T, isize>>;
 
     /// Retrieves the reverse propose trace for the specified aid.
     fn reverse_propose(
         &mut self,
         name: &str,
-    ) -> Option<&mut TraceValHandle<Value, Value, T, isize>>;
+    ) -> Option<&mut TraceValHandle<V, V, T, isize>>;
 
     /// Retrieves the reverse validate trace for the specified aid.
     fn reverse_validate(
         &mut self,
         name: &str,
-    ) -> Option<&mut TraceKeyHandle<(Value, Value), T, isize>>;
+    ) -> Option<&mut TraceKeyHandle<(V, V), T, isize>>;
 
     /// Returns the current opinion as to whether this rule is
     /// underconstrained. Underconstrained rules cannot be safely
@@ -117,16 +114,16 @@ where
 }
 
 /// Description of everything a plan needs prior to synthesis.
-pub struct Dependencies {
+pub struct Dependencies<Aid> {
     /// NameExpr's used by this plan.
     pub names: HashSet<String>,
     /// Attributes queries in Match* expressions.
     pub attributes: HashSet<Aid>,
 }
 
-impl Dependencies {
+impl<Aid> Dependencies<Aid> {
     /// A description representing a dependency on nothing.
-    pub fn none() -> Dependencies {
+    pub fn none() -> Self {
         Dependencies {
             names: HashSet::new(),
             attributes: HashSet::new(),
@@ -134,7 +131,7 @@ impl Dependencies {
     }
 
     /// A description representing a dependency on a single name.
-    pub fn name(name: &str) -> Dependencies {
+    pub fn name(name: &str) -> Self {
         let mut names = HashSet::new();
         names.insert(name.to_string());
 
@@ -145,7 +142,7 @@ impl Dependencies {
     }
 
     /// A description representing a dependency on a single attribute.
-    pub fn attribute(aid: &str) -> Dependencies {
+    pub fn attribute(aid: &str) -> Self {
         let mut attributes = HashSet::new();
         attributes.insert(aid.to_string());
 
@@ -157,7 +154,7 @@ impl Dependencies {
 
     /// Merges two dependency descriptions into one, representing
     /// their union.
-    pub fn merge(left: Dependencies, right: Dependencies) -> Dependencies {
+    pub fn merge(left: Dependencies<Aid>, right: Dependencies<Aid>) -> Self {
         Dependencies {
             names: left.names.union(&right.names).cloned().collect(),
             attributes: left.attributes.union(&right.attributes).cloned().collect(),
@@ -166,20 +163,24 @@ impl Dependencies {
 }
 
 /// A type that can be implemented as a simple relation.
-pub trait Implementable {
+pub trait Implementable<A, V>
+where
+    A: AsAid,
+    V: AsValue,
+{
     /// Returns names of any other implementable things that need to
     /// be available before implementing this one. Attributes are not
     /// mentioned explicitley as dependencies.
-    fn dependencies(&self) -> Dependencies;
+    fn dependencies(&self) -> Dependencies<A>;
 
     /// Transforms an implementable into an equivalent set of bindings
     /// that can be unified by Hector.
-    fn into_bindings(&self) -> Vec<Binding> {
+    fn into_bindings(&self) -> Vec<Binding<V>> {
         panic!("This plan can't be implemented via Hector.");
     }
 
     /// @TODO
-    fn datafy(&self) -> Vec<(Eid, Aid, Value)> {
+    fn datafy(&self) -> Vec<(V, A, V)> {
         Vec::new()
     }
 
@@ -189,122 +190,130 @@ pub trait Implementable {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>;
 }
 
 /// Possible query plan types.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub enum Plan {
-    /// Projection
-    Project(Project<Plan>),
-    /// Aggregation
-    Aggregate(Aggregate<Plan>),
-    /// Union
-    Union(Union<Plan>),
+pub enum Plan<A, V> {
+    // /// Projection
+    // Project(Project<Plan>),
+    // /// Aggregation
+    // Aggregate(Aggregate<Plan>),
+    // /// Union
+    // Union(Union<Plan>),
     /// Equijoin
-    Join(Join<Plan, Plan>),
-    /// WCO
-    Hector(Hector),
-    /// Antijoin
-    Antijoin(Antijoin<Plan, Plan>),
-    /// Negation
-    Negate(Box<Plan>),
-    /// Filters bindings by one of the built-in predicates
-    Filter(Filter<Plan>),
-    /// Transforms a binding by a function expression
-    Transform(Transform<Plan>),
+    Join(Join<A, V, Plan<A, V>, Plan<A, V>>),
+    // /// WCO
+    // Hector(Hector<V>),
+    // /// Antijoin
+    // Antijoin(Antijoin<Plan, Plan>),
+    // /// Negation
+    // Negate(Box<Plan>),
+    // /// Filters bindings by one of the built-in predicates
+    // Filter(Filter<Plan>),
+    // /// Transforms a binding by a function expression
+    // Transform(Transform<Plan>),
     /// Data pattern of the form [?e a ?v]
-    MatchA(Var, Aid, Var),
+    MatchA(Var, A, Var),
     /// Data pattern of the form [e a ?v]
-    MatchEA(Eid, Aid, Var),
+    MatchEA(V, A, Var),
     /// Data pattern of the form [?e a v]
-    MatchAV(Var, Aid, Value),
+    MatchAV(Var, A, V),
     /// Sources data from another relation.
     NameExpr(Vec<Var>, String),
-    /// Pull expression
-    Pull(Pull<Plan>),
-    /// Single-level pull expression
-    PullLevel(PullLevel<Plan>),
-    /// Single-level pull expression
-    PullAll(PullAll),
-    /// GraphQl pull expression
-    #[cfg(feature = "graphql")]
-    GraphQl(GraphQl),
+    // /// Pull expression
+    // Pull(Pull<Plan>),
+    // /// Single-level pull expression
+    // PullLevel(PullLevel<Plan>),
+    // /// Single-level pull expression
+    // PullAll(PullAll),
+    // /// GraphQl pull expression
+    // #[cfg(feature = "graphql")]
+    // GraphQl(GraphQl),
 }
 
-impl Plan {
+impl<A, V> Plan<A, V>
+where
+    V: AsValue,
+    A: AsAid,
+{
     /// Returns the variables bound by this plan.
     pub fn variables(&self) -> Vec<Var> {
         match *self {
-            Plan::Project(ref projection) => projection.variables.clone(),
-            Plan::Aggregate(ref aggregate) => aggregate.variables.clone(),
-            Plan::Union(ref union) => union.variables.clone(),
+            // Plan::Project(ref projection) => projection.variables.clone(),
+            // Plan::Aggregate(ref aggregate) => aggregate.variables.clone(),
+            // Plan::Union(ref union) => union.variables.clone(),
             Plan::Join(ref join) => join.variables.clone(),
-            Plan::Hector(ref hector) => hector.variables.clone(),
-            Plan::Antijoin(ref antijoin) => antijoin.variables.clone(),
-            Plan::Negate(ref plan) => plan.variables(),
-            Plan::Filter(ref filter) => filter.variables.clone(),
-            Plan::Transform(ref transform) => transform.variables.clone(),
+            // Plan::Hector(ref hector) => hector.variables.clone(),
+            // Plan::Antijoin(ref antijoin) => antijoin.variables.clone(),
+            // Plan::Negate(ref plan) => plan.variables(),
+            // Plan::Filter(ref filter) => filter.variables.clone(),
+            // Plan::Transform(ref transform) => transform.variables.clone(),
             Plan::MatchA(e, _, v) => vec![e, v],
             Plan::MatchEA(_, _, v) => vec![v],
             Plan::MatchAV(e, _, _) => vec![e],
             Plan::NameExpr(ref variables, ref _name) => variables.clone(),
-            Plan::Pull(ref pull) => pull.variables.clone(),
-            Plan::PullLevel(ref path) => path.variables.clone(),
-            Plan::PullAll(ref path) => path.variables.clone(),
-            #[cfg(feature = "graphql")]
-            Plan::GraphQl(_) => unimplemented!(),
+            // Plan::Pull(ref pull) => pull.variables.clone(),
+            // Plan::PullLevel(ref path) => path.variables.clone(),
+            // Plan::PullAll(ref path) => path.variables.clone(),
+            // #[cfg(feature = "graphql")]
+            // Plan::GraphQl(_) => unimplemented!(),
         }
     }
 }
 
-impl Implementable for Plan {
-    fn dependencies(&self) -> Dependencies {
+impl<A, V> Implementable<A,V> for Plan<A, V>
+where
+    A: AsAid,
+    V: AsValue,
+{
+    fn dependencies(&self) -> Dependencies<A> {
         // @TODO provide a general fold for plans
         match *self {
-            Plan::Project(ref projection) => projection.dependencies(),
-            Plan::Aggregate(ref aggregate) => aggregate.dependencies(),
-            Plan::Union(ref union) => union.dependencies(),
+            // Plan::Project(ref projection) => projection.dependencies(),
+            // Plan::Aggregate(ref aggregate) => aggregate.dependencies(),
+            // Plan::Union(ref union) => union.dependencies(),
             Plan::Join(ref join) => join.dependencies(),
-            Plan::Hector(ref hector) => hector.dependencies(),
-            Plan::Antijoin(ref antijoin) => antijoin.dependencies(),
-            Plan::Negate(ref plan) => plan.dependencies(),
-            Plan::Filter(ref filter) => filter.dependencies(),
-            Plan::Transform(ref transform) => transform.dependencies(),
+            // Plan::Hector(ref hector) => hector.dependencies(),
+            // Plan::Antijoin(ref antijoin) => antijoin.dependencies(),
+            // Plan::Negate(ref plan) => plan.dependencies(),
+            // Plan::Filter(ref filter) => filter.dependencies(),
+            // Plan::Transform(ref transform) => transform.dependencies(),
             Plan::MatchA(_, ref a, _) => Dependencies::attribute(a),
             Plan::MatchEA(_, ref a, _) => Dependencies::attribute(a),
             Plan::MatchAV(_, ref a, _) => Dependencies::attribute(a),
             Plan::NameExpr(_, ref name) => Dependencies::name(name),
-            Plan::Pull(ref pull) => pull.dependencies(),
-            Plan::PullLevel(ref path) => path.dependencies(),
-            Plan::PullAll(ref path) => path.dependencies(),
-            #[cfg(feature = "graphql")]
-            Plan::GraphQl(ref q) => q.dependencies(),
+            // Plan::Pull(ref pull) => pull.dependencies(),
+            // Plan::PullLevel(ref path) => path.dependencies(),
+            // Plan::PullAll(ref path) => path.dependencies(),
+            // #[cfg(feature = "graphql")]
+            // Plan::GraphQl(ref q) => q.dependencies(),
         }
     }
 
-    fn into_bindings(&self) -> Vec<Binding> {
+    fn into_bindings(&self) -> Vec<Binding<V>> {
         // @TODO provide a general fold for plans
         match *self {
-            Plan::Project(ref projection) => projection.into_bindings(),
-            Plan::Aggregate(ref aggregate) => aggregate.into_bindings(),
-            Plan::Union(ref union) => union.into_bindings(),
+            // Plan::Project(ref projection) => projection.into_bindings(),
+            // Plan::Aggregate(ref aggregate) => aggregate.into_bindings(),
+            // Plan::Union(ref union) => union.into_bindings(),
             Plan::Join(ref join) => join.into_bindings(),
-            Plan::Hector(ref hector) => hector.into_bindings(),
-            Plan::Antijoin(ref antijoin) => antijoin.into_bindings(),
-            Plan::Negate(ref plan) => plan.into_bindings(),
-            Plan::Filter(ref filter) => filter.into_bindings(),
-            Plan::Transform(ref transform) => transform.into_bindings(),
+            // Plan::Hector(ref hector) => hector.into_bindings(),
+            // Plan::Antijoin(ref antijoin) => antijoin.into_bindings(),
+            // Plan::Negate(ref plan) => plan.into_bindings(),
+            // Plan::Filter(ref filter) => filter.into_bindings(),
+            // Plan::Transform(ref transform) => transform.into_bindings(),
             Plan::MatchA(e, ref a, v) => vec![Binding::attribute(e, a, v)],
             Plan::MatchEA(match_e, ref a, v) => {
                 let e = gensym();
                 vec![
                     Binding::attribute(e, a, v),
-                    Binding::constant(e, Value::Eid(match_e)),
+                    Binding::constant(e, match_e),
                 ]
             }
             Plan::MatchAV(e, ref a, ref match_v) => {
@@ -315,53 +324,53 @@ impl Implementable for Plan {
                 ]
             }
             Plan::NameExpr(_, ref _name) => unimplemented!(), // @TODO hmm...
-            Plan::Pull(ref pull) => pull.into_bindings(),
-            Plan::PullLevel(ref path) => path.into_bindings(),
-            Plan::PullAll(ref path) => path.into_bindings(),
-            #[cfg(feature = "graphql")]
-            Plan::GraphQl(ref q) => q.into_bindings(),
+            // Plan::Pull(ref pull) => pull.into_bindings(),
+            // Plan::PullLevel(ref path) => path.into_bindings(),
+            // Plan::PullAll(ref path) => path.into_bindings(),
+            // #[cfg(feature = "graphql")]
+            // Plan::GraphQl(ref q) => q.into_bindings(),
         }
     }
 
-    fn datafy(&self) -> Vec<(Eid, Aid, Value)> {
+    fn datafy(&self) -> Vec<(V, A, V)> {
         // @TODO provide a general fold for plans
         match *self {
-            Plan::Project(ref projection) => projection.datafy(),
-            Plan::Aggregate(ref aggregate) => aggregate.datafy(),
-            Plan::Union(ref union) => union.datafy(),
+            // Plan::Project(ref projection) => projection.datafy(),
+            // Plan::Aggregate(ref aggregate) => aggregate.datafy(),
+            // Plan::Union(ref union) => union.datafy(),
             Plan::Join(ref join) => join.datafy(),
-            Plan::Hector(ref hector) => hector.datafy(),
-            Plan::Antijoin(ref antijoin) => antijoin.datafy(),
-            Plan::Negate(ref plan) => plan.datafy(),
-            Plan::Filter(ref filter) => filter.datafy(),
-            Plan::Transform(ref transform) => transform.datafy(),
+            // Plan::Hector(ref hector) => hector.datafy(),
+            // Plan::Antijoin(ref antijoin) => antijoin.datafy(),
+            // Plan::Negate(ref plan) => plan.datafy(),
+            // Plan::Filter(ref filter) => filter.datafy(),
+            // Plan::Transform(ref transform) => transform.datafy(),
             Plan::MatchA(_e, ref a, _v) => vec![(
-                next_id(),
+                V::gen_eid(),
                 "df.pattern/a".to_string(),
-                Value::Aid(a.to_string()),
+                V::aid(a.to_string()),
             )],
             Plan::MatchEA(e, ref a, _) => vec![
-                (next_id(), "df.pattern/e".to_string(), Value::Eid(e)),
+                (V::gen_eid(), "df.pattern/e".to_string(), V::eid(e)),
                 (
-                    next_id(),
+                    V::gen_eid(),
                     "df.pattern/a".to_string(),
-                    Value::Aid(a.to_string()),
+                    V::aid(a.to_string()),
                 ),
             ],
             Plan::MatchAV(_, ref a, ref v) => vec![
                 (
-                    next_id(),
+                    V::gen_eid(),
                     "df.pattern/a".to_string(),
-                    Value::Aid(a.to_string()),
+                    V::aid(a.to_string()),
                 ),
-                (next_id(), "df.pattern/v".to_string(), v.clone()),
+                (V::gen_eid(), "df.pattern/v".to_string(), v.clone()),
             ],
             Plan::NameExpr(_, ref _name) => Vec::new(),
-            Plan::Pull(ref pull) => pull.datafy(),
-            Plan::PullLevel(ref path) => path.datafy(),
-            Plan::PullAll(ref path) => path.datafy(),
-            #[cfg(feature = "graphql")]
-            Plan::GraphQl(ref q) => q.datafy(),
+            // Plan::Pull(ref pull) => pull.datafy(),
+            // Plan::PullLevel(ref path) => path.datafy(),
+            // Plan::PullAll(ref path) => path.datafy(),
+            // #[cfg(feature = "graphql")]
+            // Plan::GraphQl(ref q) => q.datafy(),
         }
     }
 
@@ -370,44 +379,44 @@ impl Implementable for Plan {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         match *self {
-            Plan::Project(ref projection) => {
-                projection.implement(nested, local_arrangements, context)
-            }
-            Plan::Aggregate(ref aggregate) => {
-                aggregate.implement(nested, local_arrangements, context)
-            }
-            Plan::Union(ref union) => union.implement(nested, local_arrangements, context),
+            // Plan::Project(ref projection) => {
+            //     projection.implement(nested, local_arrangements, context)
+            // }
+            // Plan::Aggregate(ref aggregate) => {
+            //     aggregate.implement(nested, local_arrangements, context)
+            // }
+            // Plan::Union(ref union) => union.implement(nested, local_arrangements, context),
             Plan::Join(ref join) => join.implement(nested, local_arrangements, context),
-            Plan::Hector(ref hector) => hector.implement(nested, local_arrangements, context),
-            Plan::Antijoin(ref antijoin) => antijoin.implement(nested, local_arrangements, context),
-            Plan::Negate(ref plan) => {
-                let (relation, mut shutdown_handle) =
-                    plan.implement(nested, local_arrangements, context);
-                let variables = relation.variables();
+            // Plan::Hector(ref hector) => hector.implement(nested, local_arrangements, context),
+            // Plan::Antijoin(ref antijoin) => antijoin.implement(nested, local_arrangements, context),
+            // Plan::Negate(ref plan) => {
+            //     let (relation, mut shutdown_handle) =
+            //         plan.implement(nested, local_arrangements, context);
+            //     let variables = relation.variables();
 
-                let tuples = {
-                    let (projected, shutdown) = relation.projected(nested, context, &variables);
-                    shutdown_handle.merge_with(shutdown);
+            //     let tuples = {
+            //         let (projected, shutdown) = relation.projected(nested, context, &variables);
+            //         shutdown_handle.merge_with(shutdown);
 
-                    projected.negate()
-                };
+            //         projected.negate()
+            //     };
 
-                (
-                    Implemented::Collection(CollectionRelation { variables, tuples }),
-                    shutdown_handle,
-                )
-            }
-            Plan::Filter(ref filter) => filter.implement(nested, local_arrangements, context),
-            Plan::Transform(ref transform) => {
-                transform.implement(nested, local_arrangements, context)
-            }
+            //     (
+            //         Implemented::Collection(CollectionRelation { variables, tuples }),
+            //         shutdown_handle,
+            //     )
+            // }
+            // Plan::Filter(ref filter) => filter.implement(nested, local_arrangements, context),
+            // Plan::Transform(ref transform) => {
+            //     transform.implement(nested, local_arrangements, context)
+            // }
             Plan::MatchA(e, ref a, v) => {
                 let binding = AttributeBinding {
                     variables: (e, v),
@@ -430,7 +439,7 @@ impl Implementable for Plan {
                                 forwarded.advance_by(&frontier);
                                 Product::new(forwarded, 0)
                             })
-                            .filter(move |e, _v| *e == Value::Eid(match_e))
+                            .filter(move |e, _v| *e == match_e)
                             .as_collection(|_e, v| vec![v.clone()]);
 
                         (tuples, shutdown_propose)
@@ -526,11 +535,11 @@ impl Implementable for Plan {
                     }
                 }
             }
-            Plan::Pull(ref pull) => pull.implement(nested, local_arrangements, context),
-            Plan::PullLevel(ref path) => path.implement(nested, local_arrangements, context),
-            Plan::PullAll(ref path) => path.implement(nested, local_arrangements, context),
-            #[cfg(feature = "graphql")]
-            Plan::GraphQl(ref query) => query.implement(nested, local_arrangements, context),
+            // Plan::Pull(ref pull) => pull.implement(nested, local_arrangements, context),
+            // Plan::PullLevel(ref path) => path.implement(nested, local_arrangements, context),
+            // Plan::PullAll(ref path) => path.implement(nested, local_arrangements, context),
+            // #[cfg(feature = "graphql")]
+            // Plan::GraphQl(ref query) => query.implement(nested, local_arrangements, context),
         }
     }
 }

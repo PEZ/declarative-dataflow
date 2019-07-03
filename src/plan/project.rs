@@ -7,23 +7,22 @@ use timely::progress::Timestamp;
 use differential_dataflow::lattice::Lattice;
 
 use crate::binding::Binding;
-use crate::plan::{next_id, Dependencies, ImplContext, Implementable};
-use crate::{Aid, Eid, Value, Var};
+use crate::plan::{Dependencies, ImplContext, Implementable, Var};
 use crate::{CollectionRelation, Implemented, Relation, ShutdownHandle, VariableMap};
 
 /// A plan stage projecting its source to only the specified sequence
 /// of variables. Throws on unbound variables. Frontends are responsible
 /// for ensuring that the source binds all requested variables.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Project<P: Implementable> {
+pub struct Project<P: Implementable<A, V>> {
     /// TODO
     pub variables: Vec<Var>,
     /// Plan for the data source.
     pub plan: Box<P>,
 }
 
-impl<P: Implementable> Implementable for Project<P> {
-    fn dependencies(&self) -> Dependencies {
+impl<P: Implementable<A, V>, V> Implementable<A, V> for Project<P> {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         self.plan.dependencies()
     }
 
@@ -31,8 +30,8 @@ impl<P: Implementable> Implementable for Project<P> {
         self.plan.into_bindings()
     }
 
-    fn datafy(&self) -> Vec<(Eid, Aid, Value)> {
-        let eid = next_id();
+    fn datafy(&self) -> Vec<(V, V::Aid, V)> {
+        let eid = V::gen_eid();
         let mut data = self.plan.datafy();
 
         if data.is_empty() {
@@ -40,7 +39,7 @@ impl<P: Implementable> Implementable for Project<P> {
         } else {
             let child_eid = data[0].0;
 
-            data.push((eid, "df.project/binding".to_string(), Value::Eid(child_eid)));
+            data.push((eid, "df.project/binding".to_string(), child_eid));
 
             data
         }
@@ -51,10 +50,10 @@ impl<P: Implementable> Implementable for Project<P> {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         let (relation, mut shutdown_handle) =

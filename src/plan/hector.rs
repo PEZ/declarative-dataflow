@@ -32,7 +32,7 @@ use crate::binding::{BinaryPredicateBinding, ConstantBinding};
 use crate::logging::DeclarativeEvent;
 use crate::plan::{Dependencies, ImplContext, Implementable};
 use crate::timestamp::altneu::AltNeu;
-use crate::{Aid, Value, Var};
+use crate::{Var, AsValue};
 use crate::{CollectionRelation, Implemented, ShutdownHandle, VariableMap};
 
 type Extender<'a, S, P, V> = Box<(dyn PrefixExtender<S, Prefix = P, Extension = V> + 'a)>;
@@ -76,15 +76,15 @@ where
     ) -> Vec<Extender<'a, S, P, V>>;
 }
 
-impl<'a, S> IntoExtender<'a, S, Value> for ConstantBinding
+impl<'a, S, V> IntoExtender<'a, S, V> for ConstantBinding<V>
 where
     S: Scope,
     S::Timestamp: Timestamp + Lattice,
 {
-    fn into_extender<P: ExchangeData + IndexNode<Value>, B: AsBinding + std::fmt::Debug>(
+    fn into_extender<P: ExchangeData + IndexNode<V>, B: AsBinding + std::fmt::Debug>(
         &self,
         _prefix: &B,
-    ) -> Vec<Extender<'a, S, P, Value>> {
+    ) -> Vec<Extender<'a, S, P, V>> {
         vec![Box::new(ConstantExtender {
             phantom: std::marker::PhantomData,
             value: self.value.clone(),
@@ -125,11 +125,11 @@ where
 /// variables. Throws if any of the join variables isn't bound by both
 /// sources.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Hector {
+pub struct Hector<V> {
     /// Variables to bind.
     pub variables: Vec<Var>,
     /// Bindings to join.
-    pub bindings: Vec<Binding>,
+    pub bindings: Vec<Binding<V>>,
 }
 
 enum Direction {
@@ -169,7 +169,7 @@ where
 /// delta pipeline. We need to identify them and handle them as
 /// special cases, because we always have to start from prefixes of
 /// size two.
-pub fn source_conflicts(source_index: usize, bindings: &[Binding]) -> Vec<&Binding> {
+pub fn source_conflicts<V>(source_index: usize, bindings: &[Binding<V>]) -> Vec<&Binding<V>> {
     match bindings[source_index] {
         Binding::Attribute(ref source) => {
             let prefix_0 = vec![source.variables.0];
@@ -202,7 +202,7 @@ pub fn source_conflicts(source_index: usize, bindings: &[Binding]) -> Vec<&Bindi
 /// binding order.
 ///
 /// (adapted from github.com/frankmcsherry/dataflow-join/src/motif.rs)
-pub fn plan_order(source_index: usize, bindings: &[Binding]) -> (Vec<Var>, Vec<Binding>) {
+pub fn plan_order<V>(source_index: usize, bindings: &[Binding<V>]) -> (Vec<Var>, Vec<Binding<V>>) {
     let mut variables = bindings
         .iter()
         .flat_map(AsBinding::variables)
@@ -242,11 +242,11 @@ pub fn plan_order(source_index: usize, bindings: &[Binding]) -> (Vec<Var>, Vec<B
                     None
                 }
             })
-            .collect::<Vec<Binding>>()
+            .collect::<Vec<Binding<V>>>()
     };
 
     let mut ordered_bindings = Vec::new();
-    let mut candidates: Vec<Binding> = prefix
+    let mut candidates: Vec<Binding<V>> = prefix
         .iter()
         .flat_map(|x| candidates_for(&bindings, *x))
         .collect();
@@ -305,9 +305,9 @@ trait IndexNode<V> {
     fn index(&self, index: usize) -> V;
 }
 
-impl IndexNode<Value> for (Value, Value) {
+impl<V> IndexNode<V> for (V, V) {
     #[inline(always)]
-    fn index(&self, index: usize) -> Value {
+    fn index(&self, index: usize) -> V {
         assert!(index <= 1);
         if index == 0 {
             self.0.clone()
@@ -317,9 +317,9 @@ impl IndexNode<Value> for (Value, Value) {
     }
 }
 
-impl IndexNode<Value> for (&Value, &Value) {
+impl<V> IndexNode<V> for (&V, &V) {
     #[inline(always)]
-    fn index(&self, index: usize) -> Value {
+    fn index(&self, index: usize) -> V {
         assert!(index <= 1);
         if index == 0 {
             self.0.clone()
@@ -329,14 +329,14 @@ impl IndexNode<Value> for (&Value, &Value) {
     }
 }
 
-impl IndexNode<Value> for Vec<Value> {
+impl<V> IndexNode<V> for Vec<V> {
     #[inline(always)]
-    fn index(&self, index: usize) -> Value {
+    fn index(&self, index: usize) -> V {
         self[index].clone()
     }
 }
 
-impl Hector {
+impl<V> Hector<V> {
     // @TODO pass single binding as argument?
     // @TODO make these static and take variables as well?
 
@@ -345,10 +345,10 @@ impl Hector {
         nested: &mut Iterative<'b, S, u64>,
         _local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         // With only a single binding given, we don't want to do
@@ -407,10 +407,10 @@ impl Hector {
     //     context: &mut I,
     //     left: Binding,
     //     right: Binding,
-    // ) -> (Implemented<'b, S>, ShutdownHandle)
+    // ) -> (Implemented<'b, S, V>, ShutdownHandle)
     // where
     //     T: Timestamp + Lattice,
-    //     I: ImplContext<T>,
+    //     I: ImplContext<A, V, T>,
     //     S: Scope<Timestamp = T>,
     // {
     //     let (source, right) = match left {
@@ -468,8 +468,8 @@ impl Hector {
     // }
 }
 
-impl Implementable for Hector {
-    fn dependencies(&self) -> Dependencies {
+impl<V: AsValue> Implementable<A, V> for Hector<V> {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         let attributes = self
             .bindings
             .iter()
@@ -480,7 +480,7 @@ impl Implementable for Hector {
                     None
                 }
             })
-            .collect::<HashSet<Aid>>();
+            .collect::<HashSet<V::Aid>>();
 
         Dependencies {
             names: HashSet::new(),
@@ -488,7 +488,7 @@ impl Implementable for Hector {
         }
     }
 
-    fn into_bindings(&self) -> Vec<Binding> {
+    fn into_bindings(&self) -> Vec<Binding<V>> {
         self.bindings.clone()
     }
 
@@ -497,10 +497,10 @@ impl Implementable for Hector {
         nested: &mut Iterative<'b, S, u64>,
         _local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         if self.bindings.is_empty() {
@@ -647,7 +647,7 @@ impl Implementable for Hector {
                                     None => {
                                         debug!("Extending {:?} to {:?}", prefix, target);
 
-                                        let mut extenders: Vec<Extender<'_, _, Vec<Value>, _>> = vec![];
+                                        let mut extenders: Vec<Extender<'_, _, Vec<V>, _>> = vec![];
 
                                         // Handling AntijoinBinding's requires dealing with recursion,
                                         // because they wrap another binding. We don't actually want to wrap
@@ -801,7 +801,7 @@ impl Implementable for Hector {
                                                                         count,
                                                                         propose,
                                                                         validate,
-                                                                        key_selector: Rc::new(move |prefix: &Vec<Value>| prefix.index(offset)),
+                                                                        key_selector: Rc::new(move |prefix: &Vec<V>| prefix.index(offset)),
                                                                     })
                                                                 );
                                                             },
@@ -890,7 +890,7 @@ impl Implementable for Hector {
                                                                         count,
                                                                         propose,
                                                                         validate,
-                                                                        key_selector: Rc::new(move |prefix: &Vec<Value>| prefix.index(offset)),
+                                                                        key_selector: Rc::new(move |prefix: &Vec<V>| prefix.index(offset)),
                                                                     })
                                                                 );
                                                             },
@@ -913,7 +913,7 @@ impl Implementable for Hector {
                                                 .map(|_| ())
                                                 .consolidate()
                                                 .count()
-                                                .map(move |(_, count)| (Value::Eid(worker_index as u64), Value::Number(count as i64)))
+                                                .map(move |(_, count)| (V::from(worker_index as u64), V::from(count as i64)))
                                                 .leave()
                                                 .leave()
                                                 .inspect(move |x| { println!("{}: {:?}", source_attribute, x); });

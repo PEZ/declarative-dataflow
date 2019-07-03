@@ -17,7 +17,7 @@ use crate::{CollectionRelation, Implemented, Relation, ShutdownHandle, VariableM
 /// A plan stage for extracting all matching [e a v] tuples for a
 /// given set of attributes and an input relation specifying entities.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct PullLevel<P: Implementable> {
+pub struct PullLevel<P: Implementable<A, V>> {
     /// TODO
     pub variables: Vec<Var>,
     /// Plan for the input relation.
@@ -40,7 +40,7 @@ pub struct PullLevel<P: Implementable> {
 /// (?parent)                      <- [:parent/name] | no constraints
 /// (?parent :parent/child ?child) <- [:child/name]  | [?parent :parent/child ?child]
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Pull<P: Implementable> {
+pub struct Pull<P: Implementable<A, V>> {
     /// TODO
     pub variables: Vec<Var>,
     /// Individual paths to pull.
@@ -77,8 +77,8 @@ fn interleave(values: &[Value], constants: &[Aid]) -> Vec<Value> {
     }
 }
 
-impl<P: Implementable> Implementable for PullLevel<P> {
-    fn dependencies(&self) -> Dependencies {
+impl<V, P: Implementable<A, V>> Implementable<A, V> for PullLevel<P> {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         let mut dependencies = self.plan.dependencies();
 
         for attribute in &self.pull_attributes {
@@ -94,10 +94,10 @@ impl<P: Implementable> Implementable for PullLevel<P> {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         use differential_dataflow::operators::arrange::{Arrange, Arranged, TraceAgent};
@@ -235,8 +235,8 @@ impl<P: Implementable> Implementable for PullLevel<P> {
     }
 }
 
-impl<P: Implementable> Implementable for Pull<P> {
-    fn dependencies(&self) -> Dependencies {
+impl<V, P: Implementable<A, V>> Implementable<A, V> for Pull<P> {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         let mut dependencies = Dependencies::none();
         for path in self.paths.iter() {
             dependencies = Dependencies::merge(dependencies, path.dependencies());
@@ -250,10 +250,10 @@ impl<P: Implementable> Implementable for Pull<P> {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         let mut scope = nested.clone();
@@ -296,8 +296,8 @@ pub struct PullAll {
     pub pull_attributes: Vec<Aid>,
 }
 
-impl Implementable for PullAll {
-    fn dependencies(&self) -> Dependencies {
+impl<V> Implementable<A, V> for PullAll {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         let mut dependencies = Dependencies::none();
 
         for attribute in &self.pull_attributes {
@@ -313,10 +313,10 @@ impl Implementable for PullAll {
         nested: &mut Iterative<'b, S, u64>,
         _local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         use differential_dataflow::trace::TraceReader;

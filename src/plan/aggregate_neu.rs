@@ -11,7 +11,7 @@ use differential_dataflow::operators::{Count, Reduce};
 
 use crate::binding::{AsBinding, Binding};
 use crate::plan::{Dependencies, ImplContext, Implementable};
-use crate::{CollectionRelation, Implemented, Relation, ShutdownHandle, Value, Var, VariableMap};
+use crate::{CollectionRelation, Implemented, Relation, ShutdownHandle, Var, VariableMap};
 
 use num_rational::{Ratio, Rational32};
 
@@ -40,7 +40,7 @@ pub enum AggregationFn {
 /// bindings for the specified variables. Given multiple aggregations
 /// we iterate and n-1 joins are applied to the results.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Aggregate<P: Implementable> {
+pub struct Aggregate<P: Implementable<A, V>> {
     /// TODO
     pub variables: Vec<Var>,
     /// Plan for the data source.
@@ -55,8 +55,8 @@ pub struct Aggregate<P: Implementable> {
     pub with_variables: Vec<Var>,
 }
 
-impl<P: Implementable> Implementable for Aggregate<P> {
-    fn dependencies(&self) -> Dependencies {
+impl<V, P: Implementable<A, V>> Implementable<A, V> for Aggregate<P> {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         self.plan.dependencies()
     }
 
@@ -64,15 +64,15 @@ impl<P: Implementable> Implementable for Aggregate<P> {
         self.plan.into_bindings()
     }
 
-    fn implement<'b, T, I, S>(
+    fn implement<'b, V, T, I, S>(
         &self,
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         let (relation, mut shutdown_handle) =
@@ -125,7 +125,7 @@ impl<P: Implementable> Implementable for Aggregate<P> {
             let with_length = self.with_variables.len();
 
             // Access the right value for the given iteration loop and extend possible with-values.
-            let prepare_unary = move |(key, tuple): (Vec<Value>, Vec<Value>)| {
+            let prepare_unary = move |(key, tuple): (Vec<V>, Vec<V>)| {
                 let value = &tuple[value_offset];
                 let mut v = vec![value.clone()];
 
@@ -168,7 +168,7 @@ impl<P: Implementable> Implementable for Aggregate<P> {
                             total_count += count;
                         }
 
-                        output.push((vec![Value::Number(total_count as i64)], 1))
+                        output.push((vec![V::from(total_count as i64)], 1))
                     });
                     collections.push(tuples);
                 }
@@ -176,31 +176,29 @@ impl<P: Implementable> Implementable for Aggregate<P> {
                     let tuples = tuples
                         .map(prepare_unary)
                         .explode(|(key, val)| {
-                            let v = match val[0] {
-                                Value::Number(num) => num,
-                                _ => panic!("SUM can only be applied on type Number."),
-                            };
+                            let v = i64::try_from(val[0])
+                                .expect("SUM can only be applied on type Number.");
+                            
                             Some((key, v as isize))
                         })
                         .count()
-                        .map(move |(key, count)| (key, vec![Value::Number(count as i64)]));
+                        .map(move |(key, count)| (key, vec![V::from(count as i64)]));
                     collections.push(tuples);
                 }
                 AggregationFn::AVG => {
                     let tuples = tuples
                         .map(prepare_unary)
                         .explode(move |(key, val)| {
-                            let v = match val[0] {
-                                Value::Number(num) => num,
-                                _ => panic!("AVG can only be applied on type Number."),
-                            };
+                            let v = i64::try_from(val[0])
+                                .expect("AVG can only be applied on type Number.");
+
                             Some((key, DiffPair::new(v as isize, 1)))
                         })
                         .count()
                         .map(move |(key, diff_pair)| {
                             (
                                 key,
-                                vec![Value::Rational32(Ratio::new(
+                                vec![V::from(Ratio::new(
                                     diff_pair.element1 as i32,
                                     diff_pair.element2 as i32,
                                 ))],
@@ -212,10 +210,9 @@ impl<P: Implementable> Implementable for Aggregate<P> {
                     let tuples = tuples
                         .map(prepare_unary)
                         .explode(move |(key, val)| {
-                            let v = match val[0] {
-                                Value::Number(num) => num,
-                                _ => panic!("VARIANCE can only be applied on type Number."),
-                            };
+                            let v = i64::try_from(val[0])
+                                .expect("VARIANCE can only be applied on type Number.");
+                            
                             Some((
                                 key,
                                 DiffPair::new(
@@ -231,7 +228,7 @@ impl<P: Implementable> Implementable for Aggregate<P> {
                             let c = diff_pair.element2 as i32;
                             (
                                 key,
-                                vec![Value::Rational32(
+                                vec![V::from(
                                     Rational32::new(sum_square, c) - Rational32::new(sum, c).pow(2),
                                 )],
                             )

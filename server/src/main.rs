@@ -44,7 +44,7 @@ type T = Pair<Duration, u64>;
 
 /// A mutation of server state.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize, Debug)]
-struct Command {
+struct Command<V> {
     /// The worker that received this command from a client originally
     /// and is therefore the one that should receive all outputs.
     pub owner: usize,
@@ -52,7 +52,7 @@ struct Command {
     /// owning worker, as no one else has the connection.
     pub client: usize,
     /// Requests issued by the client.
-    pub requests: Vec<Request>,
+    pub requests: Vec<Request<Value>>,
 }
 
 fn main() {

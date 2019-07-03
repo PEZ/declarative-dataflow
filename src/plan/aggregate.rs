@@ -40,7 +40,7 @@ pub enum AggregationFn {
 /// bindings for the specified variables. Given multiple aggregations
 /// we iterate and n-1 joins are applied to the results.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Aggregate<P: Implementable> {
+pub struct Aggregate<P: Implementable<A, V>> {
     /// TODO
     pub variables: Vec<Var>,
     /// Plan for the data source.
@@ -55,8 +55,8 @@ pub struct Aggregate<P: Implementable> {
     pub with_variables: Vec<Var>,
 }
 
-impl<P: Implementable> Implementable for Aggregate<P> {
-    fn dependencies(&self) -> Dependencies {
+impl<P: Implementable<A, V>> Implementable<A, V> for Aggregate<P> {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         self.plan.dependencies()
     }
 
@@ -69,10 +69,10 @@ impl<P: Implementable> Implementable for Aggregate<P> {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         let (relation, mut shutdown_handle) =

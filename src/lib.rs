@@ -20,6 +20,7 @@ pub mod server;
 pub mod sinks;
 pub mod sources;
 pub mod timestamp;
+pub mod value;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
@@ -41,101 +42,10 @@ use differential_dataflow::trace::implementations::ord::{OrdKeySpine, OrdValSpin
 use differential_dataflow::trace::TraceReader;
 use differential_dataflow::{Collection, ExchangeData};
 
-#[cfg(feature = "uuid")]
-pub use uuid::Uuid;
-
-pub use num_rational::Rational32;
-
 pub use binding::{AsBinding, AttributeBinding, Binding};
-pub use plan::{Hector, ImplContext, Implementable, Plan};
+pub use plan::{ImplContext, Implementable, Plan};
 pub use timestamp::{Rewind, Time};
-
-/// A unique entity identifier.
-pub type Eid = u64;
-
-/// A unique attribute identifier.
-pub type Aid = String; // u32
-
-/// Possible data values.
-///
-/// This enum captures the currently supported data types, and is the
-/// least common denominator for the types of records moved around.
-#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub enum Value {
-    /// An attribute identifier
-    Aid(Aid),
-    /// A string
-    String(String),
-    /// A boolean
-    Bool(bool),
-    /// A 64 bit signed integer
-    Number(i64),
-    /// A 32 bit rational
-    Rational32(Rational32),
-    /// An entity identifier
-    Eid(Eid),
-    /// Milliseconds since midnight, January 1, 1970 UTC
-    Instant(u64),
-    /// A 16 byte unique identifier.
-    #[cfg(feature = "uuid")]
-    Uuid(Uuid),
-    /// A fixed-precision real number.
-    #[cfg(feature = "real")]
-    Real(fixed::types::I16F16),
-}
-
-impl Value {
-    /// Helper to create an Aid value from a string representation.
-    pub fn aid(v: &str) -> Self {
-        Value::Aid(v.to_string())
-    }
-
-    /// Helper to create a UUID value from a string representation.
-    #[cfg(feature = "uuid")]
-    pub fn uuid_str(v: &str) -> Self {
-        let uuid = Uuid::parse_str(v).expect("failed to parse UUID");
-        Value::Uuid(uuid)
-    }
-}
-
-impl std::convert::From<&str> for Value {
-    fn from(v: &str) -> Self {
-        Value::String(v.to_string())
-    }
-}
-
-#[cfg(feature = "real")]
-impl std::convert::From<f64> for Value {
-    fn from(v: f64) -> Self {
-        let real =
-            fixed::types::I16F16::checked_from_float(v).expect("failed to convert to I16F16");
-
-        Value::Real(real)
-    }
-}
-
-#[cfg(feature = "serde_json")]
-impl std::convert::From<Value> for serde_json::Value {
-    fn from(v: Value) -> Self {
-        match v {
-            Value::Aid(v) => serde_json::Value::String(v),
-            Value::String(v) => serde_json::Value::String(v),
-            Value::Bool(v) => serde_json::Value::Bool(v),
-            Value::Number(v) => serde_json::Value::Number(serde_json::Number::from(v)),
-            _ => unimplemented!(),
-        }
-    }
-}
-
-impl std::convert::From<Value> for Eid {
-    fn from(v: Value) -> Eid {
-        if let Value::Eid(eid) = v {
-            eid
-        } else {
-            panic!("Value {:?} can't be converted to Eid", v);
-        }
-    }
-}
+pub use value::{Eid, Aid, Value, AsValue, AsAid};
 
 /// A client-facing, non-exceptional error.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -444,12 +354,12 @@ pub struct RelationConfig {
 type Var = u32;
 
 /// A named relation.
-#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Rule {
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
+pub struct Rule<A, V> {
     /// The name identifying the relation.
     pub name: String,
     /// The plan describing contents of the relation.
-    pub plan: Plan,
+    pub plan: Plan<A, V>,
 }
 
 /// A relation between a set of variables.
@@ -457,11 +367,13 @@ pub struct Rule {
 /// Relations can be backed by a collection of records of type
 /// `Vec<Value>`, each of a common length (with offsets corresponding
 /// to the variable offsets), or by an existing arrangement.
-trait Relation<'a, G, I>: AsBinding
+trait Relation<'a, G, A, V, I>: AsBinding
 where
     G: Scope,
     G::Timestamp: Lattice + ExchangeData,
-    I: ImplContext<G::Timestamp>,
+    A: AsAid,
+    V: AsValue,
+    I: ImplContext<A, V, G::Timestamp>,
 {
     /// A collection containing all tuples.
     fn tuples(
@@ -469,7 +381,7 @@ where
         nested: &mut Iterative<'a, G, u64>,
         context: &mut I,
     ) -> (
-        Collection<Iterative<'a, G, u64>, Vec<Value>, isize>,
+        Collection<Iterative<'a, G, u64>, Vec<V>, isize>,
         ShutdownHandle,
     );
 
@@ -481,13 +393,13 @@ where
         context: &mut I,
         target_variables: &[Var],
     ) -> (
-        Collection<Iterative<'a, G, u64>, Vec<Value>, isize>,
+        Collection<Iterative<'a, G, u64>, Vec<V>, isize>,
         ShutdownHandle,
     );
 
     /// A collection with tuples partitioned by `variables`.
     ///
-    /// Each tuple is mapped to a pair `(Vec<Value>, Vec<Value>)`
+    /// Each tuple is mapped to a pair `(Vec<V>, Vec<V>)`
     /// containing first exactly those variables in `variables` in that
     /// order, followed by the remaining values in their original
     /// order.
@@ -497,20 +409,22 @@ where
         context: &mut I,
         variables: &[Var],
     ) -> (
-        Collection<Iterative<'a, G, u64>, (Vec<Value>, Vec<Value>), isize>,
+        Collection<Iterative<'a, G, u64>, (Vec<V>, Vec<V>), isize>,
         ShutdownHandle,
     );
 }
 
 /// A collection and variable bindings.
-pub struct CollectionRelation<'a, G: Scope> {
+pub struct CollectionRelation<'a, G, V> {
     variables: Vec<Var>,
-    tuples: Collection<Iterative<'a, G, u64>, Vec<Value>, isize>,
+    tuples: Collection<Iterative<'a, G, u64>, Vec<V>, isize>,
 }
 
-impl<'a, G: Scope> AsBinding for CollectionRelation<'a, G>
+impl<'a, G, V> AsBinding for CollectionRelation<'a, G, V>
 where
+    G: Scope,
     G::Timestamp: Lattice + ExchangeData,
+    V: AsValue,
 {
     fn variables(&self) -> Vec<Var> {
         self.variables.clone()
@@ -529,18 +443,20 @@ where
     }
 }
 
-impl<'a, G, I> Relation<'a, G, I> for CollectionRelation<'a, G>
+impl<'a, G, A, V, I> Relation<'a, G, A, V, I> for CollectionRelation<'a, G, V>
 where
     G: Scope,
     G::Timestamp: Lattice + ExchangeData,
-    I: ImplContext<G::Timestamp>,
+    A: AsAid,
+    V: AsValue,
+    I: ImplContext<A, V, G::Timestamp>,
 {
     fn tuples(
         self,
         _nested: &mut Iterative<'a, G, u64>,
         _context: &mut I,
     ) -> (
-        Collection<Iterative<'a, G, u64>, Vec<Value>, isize>,
+        Collection<Iterative<'a, G, u64>, Vec<V>, isize>,
         ShutdownHandle,
     ) {
         (self.tuples, ShutdownHandle::empty())
@@ -552,7 +468,7 @@ where
         _context: &mut I,
         target_variables: &[Var],
     ) -> (
-        Collection<Iterative<'a, G, u64>, Vec<Value>, isize>,
+        Collection<Iterative<'a, G, u64>, Vec<V>, isize>,
         ShutdownHandle,
     ) {
         if self.variables() == target_variables {
@@ -581,7 +497,7 @@ where
         _context: &mut I,
         variables: &[Var],
     ) -> (
-        Collection<Iterative<'a, G, u64>, (Vec<Value>, Vec<Value>), isize>,
+        Collection<Iterative<'a, G, u64>, (Vec<V>, Vec<V>), isize>,
         ShutdownHandle,
     ) {
         if variables == &self.variables()[..] {
@@ -616,9 +532,9 @@ where
             }
 
             let arranged = self.tuples.map(move |tuple| {
-                let key: Vec<Value> = key_offsets.iter().map(|i| tuple[*i].clone()).collect();
+                let key: Vec<V> = key_offsets.iter().map(|i| tuple[*i].clone()).collect();
                 // @TODO second clone not really neccessary
-                let values: Vec<Value> = value_offsets
+                let values: Vec<V> = value_offsets
                     .iter()
                     .map(move |i| tuple[*i].clone())
                     .collect();
@@ -631,18 +547,20 @@ where
     }
 }
 
-impl<'a, G, I> Relation<'a, G, I> for AttributeBinding
+impl<'a, G, A, V, I> Relation<'a, G, A, V, I> for AttributeBinding
 where
     G: Scope,
     G::Timestamp: Lattice + ExchangeData,
-    I: ImplContext<G::Timestamp>,
+    A: AsAid,
+    V: AsValue,
+    I: ImplContext<A, V, G::Timestamp>,
 {
     fn tuples(
         self,
         nested: &mut Iterative<'a, G, u64>,
         context: &mut I,
     ) -> (
-        Collection<Iterative<'a, G, u64>, Vec<Value>, isize>,
+        Collection<Iterative<'a, G, u64>, Vec<V>, isize>,
         ShutdownHandle,
     ) {
         let variables = self.variables();
@@ -655,7 +573,7 @@ where
         context: &mut I,
         target_variables: &[Var],
     ) -> (
-        Collection<Iterative<'a, G, u64>, Vec<Value>, isize>,
+        Collection<Iterative<'a, G, u64>, Vec<V>, isize>,
         ShutdownHandle,
     ) {
         match context.forward_propose(&self.source_attribute) {
@@ -695,7 +613,7 @@ where
         context: &mut I,
         variables: &[Var],
     ) -> (
-        Collection<Iterative<'a, G, u64>, (Vec<Value>, Vec<Value>), isize>,
+        Collection<Iterative<'a, G, u64>, (Vec<V>, Vec<V>), isize>,
         ShutdownHandle,
     ) {
         match context.forward_propose(&self.source_attribute) {
@@ -731,21 +649,19 @@ where
 }
 
 /// @TODO
-pub enum Implemented<'a, G>
-where
-    G: Scope,
-    G::Timestamp: Lattice + ExchangeData,
-{
+pub enum Implemented<'a, G, V> {
     /// A relation backed by an attribute.
     Attribute(AttributeBinding),
     /// A relation backed by a Differential collection.
-    Collection(CollectionRelation<'a, G>),
+    Collection(CollectionRelation<'a, G, V>),
     // Arranged(ArrangedRelation<'a, G>)
 }
 
-impl<'a, G: Scope> AsBinding for Implemented<'a, G>
+impl<'a, G, V> AsBinding for Implemented<'a, G, V>
 where
+    G: Scope,
     G::Timestamp: Lattice + ExchangeData,
+    V: AsValue,
 {
     fn variables(&self) -> Vec<Var> {
         match self {
@@ -778,18 +694,20 @@ where
     }
 }
 
-impl<'a, G, I> Relation<'a, G, I> for Implemented<'a, G>
+impl<'a, G, A, V, I> Relation<'a, G, A, V, I> for Implemented<'a, G, V>
 where
     G: Scope,
     G::Timestamp: Lattice + ExchangeData,
-    I: ImplContext<G::Timestamp>,
+    A: AsAid,
+    V: AsValue,
+    I: ImplContext<A, V, G::Timestamp>,
 {
     fn tuples(
         self,
         nested: &mut Iterative<'a, G, u64>,
         context: &mut I,
     ) -> (
-        Collection<Iterative<'a, G, u64>, Vec<Value>, isize>,
+        Collection<Iterative<'a, G, u64>, Vec<V>, isize>,
         ShutdownHandle,
     ) {
         match self {
@@ -804,7 +722,7 @@ where
         context: &mut I,
         target_variables: &[Var],
     ) -> (
-        Collection<Iterative<'a, G, u64>, Vec<Value>, isize>,
+        Collection<Iterative<'a, G, u64>, Vec<V>, isize>,
         ShutdownHandle,
     ) {
         match self {
@@ -823,7 +741,7 @@ where
         context: &mut I,
         variables: &[Var],
     ) -> (
-        Collection<Iterative<'a, G, u64>, (Vec<Value>, Vec<Value>), isize>,
+        Collection<Iterative<'a, G, u64>, (Vec<V>, Vec<V>), isize>,
         ShutdownHandle,
     ) {
         match self {
@@ -843,26 +761,28 @@ where
 //     G::Timestamp: Lattice+ExchangeData
 // {
 //     variables: Vec<Var>,
-//     tuples: Arranged<Iterative<'a, G, u64>, Vec<Value>, Vec<Value>, isize,
-//                      TraceValHandle<Vec<Value>, Vec<Value>, Product<G::Timestamp,u64>, isize>>,
+//     tuples: Arranged<Iterative<'a, G, u64>, Vec<V>, Vec<V>, isize,
+//                      TraceValHandle<Vec<V>, Vec<V>, Product<G::Timestamp,u64>, isize>>,
 // }
 
-/// Helper function to create a query plan. The resulting query will
-/// provide values for the requested target variables, under the
-/// constraints expressed by the bindings provided.
-pub fn q(target_variables: Vec<Var>, bindings: Vec<Binding>) -> Plan {
-    Plan::Hector(Hector {
-        variables: target_variables,
-        bindings,
-    })
-}
+// /// Helper function to create a query plan. The resulting query will
+// /// provide values for the requested target variables, under the
+// /// constraints expressed by the bindings provided.
+// pub fn q<V>(target_variables: Vec<Var>, bindings: Vec<Binding<V>>) -> Plan<A, V> {
+//     Plan::Hector(plan::Hector {
+//         variables: target_variables,
+//         bindings,
+//     })
+// }
 
 /// Returns a deduplicates list of all rules used in the definition of
 /// the specified names. Includes the specified names.
-pub fn collect_dependencies<T, I>(context: &I, names: &[&str]) -> Result<Vec<Rule>, Error>
+pub fn collect_dependencies<A, V, T, I>(context: &I, names: &[&str]) -> Result<Vec<Rule<A, V>>, Error>
 where
+    A: AsAid,
+    V: AsValue,
     T: Timestamp + Lattice,
-    I: ImplContext<T>,
+    I: ImplContext<A, V, T>,
 {
     let mut seen = HashSet::new();
     let mut rules = Vec::new();
@@ -913,20 +833,22 @@ where
 }
 
 /// Takes a query plan and turns it into a differential dataflow.
-pub fn implement<T, I, S>(
+pub fn implement<A, V, T, I, S>(
     name: &str,
     scope: &mut S,
     context: &mut I,
 ) -> Result<
     (
-        HashMap<String, Collection<S, Vec<Value>, isize>>,
+        HashMap<String, Collection<S, Vec<V>, isize>>,
         ShutdownHandle,
     ),
     Error,
 >
 where
+    A: AsAid,
+    V: AsValue,
     T: Timestamp + Lattice + Default,
-    I: ImplContext<T>,
+    I: ImplContext<A, V, T>,
     S: Scope<Timestamp = T>,
 {
     scope.iterative::<u64, _, _>(|nested| {
@@ -1013,114 +935,114 @@ where
     })
 }
 
-/// @TODO
-pub fn implement_neu<T, I, S>(
-    name: &str,
-    scope: &mut S,
-    context: &mut I,
-) -> Result<
-    (
-        HashMap<String, Collection<S, Vec<Value>, isize>>,
-        ShutdownHandle,
-    ),
-    Error,
->
-where
-    T: Timestamp + Lattice + Default,
-    I: ImplContext<T>,
-    S: Scope<Timestamp = T>,
-{
-    scope.iterative::<u64, _, _>(move |nested| {
-        let publish = vec![name];
-        let mut rules = collect_dependencies(&*context, &publish[..])?;
+// /// @TODO
+// pub fn implement_neu<V, T, I, S>(
+//     name: &str,
+//     scope: &mut S,
+//     context: &mut I,
+// ) -> Result<
+//     (
+//         HashMap<String, Collection<S, Vec<V>, isize>>,
+//         ShutdownHandle,
+//     ),
+//     Error,
+// >
+// where
+//     T: Timestamp + Lattice + Default,
+//     I: ImplContext<A, V, T>,
+//     S: Scope<Timestamp = T>,
+// {
+//     scope.iterative::<u64, _, _>(move |nested| {
+//         let publish = vec![name];
+//         let mut rules = collect_dependencies(&*context, &publish[..])?;
 
-        let mut local_arrangements = VariableMap::new();
-        let mut result_map = HashMap::new();
+//         let mut local_arrangements = VariableMap::new();
+//         let mut result_map = HashMap::new();
 
-        // Step 0: Canonicalize, check uniqueness of bindings.
-        if rules.is_empty() {
-            return Err(Error::not_found(format!(
-                "Couldn't find any rules for name {}.",
-                name
-            )));
-        }
+//         // Step 0: Canonicalize, check uniqueness of bindings.
+//         if rules.is_empty() {
+//             return Err(Error::not_found(format!(
+//                 "Couldn't find any rules for name {}.",
+//                 name
+//             )));
+//         }
 
-        rules.sort_by(|x, y| x.name.cmp(&y.name));
-        for index in 1..rules.len() - 1 {
-            if rules[index].name == rules[index - 1].name {
-                return Err(Error::conflict(format!(
-                    "Duplicate rule definitions for rule {}",
-                    rules[index].name
-                )));
-            }
-        }
+//         rules.sort_by(|x, y| x.name.cmp(&y.name));
+//         for index in 1..rules.len() - 1 {
+//             if rules[index].name == rules[index - 1].name {
+//                 return Err(Error::conflict(format!(
+//                     "Duplicate rule definitions for rule {}",
+//                     rules[index].name
+//                 )));
+//             }
+//         }
 
-        // @TODO at this point we need to know about...
-        // @TODO ... which rules require recursion (and thus need wrapping in a Variable)
-        // @TODO ... which rules are supposed to be re-used
-        // @TODO ... which rules are supposed to be re-synthesized
-        //
-        // but based entirely on control data written to the server by something external
-        // (for the old implement it could just be a decision based on whether the rule has a namespace)
+//         // @TODO at this point we need to know about...
+//         // @TODO ... which rules require recursion (and thus need wrapping in a Variable)
+//         // @TODO ... which rules are supposed to be re-used
+//         // @TODO ... which rules are supposed to be re-synthesized
+//         //
+//         // but based entirely on control data written to the server by something external
+//         // (for the old implement it could just be a decision based on whether the rule has a namespace)
 
-        // Step 1: Create new recursive variables for each rule.
-        for name in publish.iter() {
-            if context.is_underconstrained(name) {
-                local_arrangements.insert(
-                    name.to_string(),
-                    Variable::new(nested, Product::new(Default::default(), 1)),
-                );
-            }
-        }
+//         // Step 1: Create new recursive variables for each rule.
+//         for name in publish.iter() {
+//             if context.is_underconstrained(name) {
+//                 local_arrangements.insert(
+//                     name.to_string(),
+//                     Variable::new(nested, Product::new(Default::default(), 1)),
+//                 );
+//             }
+//         }
 
-        // Step 2: Create public arrangements for published relations.
-        for name in publish.into_iter() {
-            if let Some(relation) = local_arrangements.get(name) {
-                result_map.insert(name.to_string(), relation.leave());
-            } else {
-                return Err(Error::not_found(format!(
-                    "Attempted to publish undefined name {}.",
-                    name
-                )));
-            }
-        }
+//         // Step 2: Create public arrangements for published relations.
+//         for name in publish.into_iter() {
+//             if let Some(relation) = local_arrangements.get(name) {
+//                 result_map.insert(name.to_string(), relation.leave());
+//             } else {
+//                 return Err(Error::not_found(format!(
+//                     "Attempted to publish undefined name {}.",
+//                     name
+//                 )));
+//             }
+//         }
 
-        // Step 3: Define the executions for each rule.
-        let mut executions = Vec::with_capacity(rules.len());
-        let mut shutdown_handle = ShutdownHandle::empty();
-        for rule in rules.iter() {
-            info!("neu_planning {:?}", rule.name);
+//         // Step 3: Define the executions for each rule.
+//         let mut executions = Vec::with_capacity(rules.len());
+//         let mut shutdown_handle = ShutdownHandle::empty();
+//         for rule in rules.iter() {
+//             info!("neu_planning {:?}", rule.name);
 
-            let plan = q(rule.plan.variables(), rule.plan.into_bindings());
+//             let plan = q(rule.plan.variables(), rule.plan.into_bindings());
 
-            let (relation, shutdown) = plan.implement(nested, &local_arrangements, context);
+//             let (relation, shutdown) = plan.implement(nested, &local_arrangements, context);
 
-            executions.push(relation);
-            shutdown_handle.merge_with(shutdown);
-        }
+//             executions.push(relation);
+//             shutdown_handle.merge_with(shutdown);
+//         }
 
-        // Step 4: Complete named relations in a specific order (sorted by name).
-        for (rule, execution) in rules.iter().zip(executions.drain(..)) {
-            match local_arrangements.remove(&rule.name) {
-                None => {
-                    return Err(Error::not_found(format!(
-                        "Rule {} should be in local arrangements, but isn't.",
-                        &rule.name
-                    )));
-                }
-                Some(variable) => {
-                    let (tuples, shutdown) = execution.tuples(nested, context);
-                    shutdown_handle.merge_with(shutdown);
+//         // Step 4: Complete named relations in a specific order (sorted by name).
+//         for (rule, execution) in rules.iter().zip(executions.drain(..)) {
+//             match local_arrangements.remove(&rule.name) {
+//                 None => {
+//                     return Err(Error::not_found(format!(
+//                         "Rule {} should be in local arrangements, but isn't.",
+//                         &rule.name
+//                     )));
+//                 }
+//                 Some(variable) => {
+//                     let (tuples, shutdown) = execution.tuples(nested, context);
+//                     shutdown_handle.merge_with(shutdown);
 
-                    #[cfg(feature = "set-semantics")]
-                    variable.set(&tuples.distinct());
+//                     #[cfg(feature = "set-semantics")]
+//                     variable.set(&tuples.distinct());
 
-                    #[cfg(not(feature = "set-semantics"))]
-                    variable.set(&tuples.consolidate());
-                }
-            }
-        }
+//                     #[cfg(not(feature = "set-semantics"))]
+//                     variable.set(&tuples.consolidate());
+//                 }
+//             }
+//         }
 
-        Ok((result_map, shutdown_handle))
-    })
-}
+//         Ok((result_map, shutdown_handle))
+//     })
+// }

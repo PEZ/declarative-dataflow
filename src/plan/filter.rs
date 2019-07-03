@@ -10,30 +10,30 @@ pub use crate::binding::{
     AsBinding, BinaryPredicate as Predicate, BinaryPredicateBinding, Binding,
 };
 use crate::plan::{Dependencies, ImplContext, Implementable};
-use crate::{CollectionRelation, Implemented, Relation, ShutdownHandle, Value, Var, VariableMap};
+use crate::{CollectionRelation, Implemented, Relation, ShutdownHandle, Var, VariableMap};
 
 #[inline(always)]
-fn lt(a: &Value, b: &Value) -> bool {
+fn lt(a: &V, b: &V) -> bool {
     a < b
 }
 #[inline(always)]
-fn lte(a: &Value, b: &Value) -> bool {
+fn lte(a: &V, b: &V) -> bool {
     a <= b
 }
 #[inline(always)]
-fn gt(a: &Value, b: &Value) -> bool {
+fn gt(a: &V, b: &V) -> bool {
     a > b
 }
 #[inline(always)]
-fn gte(a: &Value, b: &Value) -> bool {
+fn gte(a: &V, b: &V) -> bool {
     a >= b
 }
 #[inline(always)]
-fn eq(a: &Value, b: &Value) -> bool {
+fn eq(a: &V, b: &V) -> bool {
     a == b
 }
 #[inline(always)]
-fn neq(a: &Value, b: &Value) -> bool {
+fn neq(a: &V, b: &V) -> bool {
     a != b
 }
 
@@ -41,7 +41,7 @@ fn neq(a: &Value, b: &Value) -> bool {
 /// predicate. Frontends are responsible for ensuring that the source
 /// binds the argument variables.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Filter<P: Implementable> {
+pub struct Filter<P: Implementable<A, V>, V> {
     /// TODO
     pub variables: Vec<Var>,
     /// Logical predicate to apply.
@@ -49,11 +49,11 @@ pub struct Filter<P: Implementable> {
     /// Plan for the data source.
     pub plan: Box<P>,
     /// Constant inputs
-    pub constants: Vec<Option<Value>>,
+    pub constants: Vec<Option<V>>,
 }
 
-impl<P: Implementable> Implementable for Filter<P> {
-    fn dependencies(&self) -> Dependencies {
+impl<P: Implementable<A, V>, V> Implementable<A, V> for Filter<P, V> {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         self.plan.dependencies()
     }
 
@@ -75,10 +75,10 @@ impl<P: Implementable> Implementable for Filter<P> {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         let (relation, mut shutdown_handle) =

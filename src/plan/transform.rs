@@ -8,7 +8,7 @@ use differential_dataflow::lattice::Lattice;
 
 use crate::binding::{AsBinding, Binding};
 use crate::plan::{Dependencies, ImplContext, Implementable};
-use crate::{CollectionRelation, Implemented, Relation, ShutdownHandle, Value, Var, VariableMap};
+use crate::{CollectionRelation, Implemented, Relation, ShutdownHandle, Var, VariableMap};
 
 /// Permitted functions.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
@@ -26,7 +26,7 @@ pub enum Function {
 /// binds the argument variables and that the result is projected onto
 /// the right variable.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Transform<P: Implementable> {
+pub struct Transform<P: Implementable<A, V>, V> {
     /// TODO
     pub variables: Vec<Var>,
     /// Variable to which the result of the transformation is bound
@@ -36,11 +36,11 @@ pub struct Transform<P: Implementable> {
     /// Function to apply
     pub function: Function,
     /// Constant inputs
-    pub constants: Vec<Option<Value>>,
+    pub constants: Vec<Option<V>>,
 }
 
-impl<P: Implementable> Implementable for Transform<P> {
-    fn dependencies(&self) -> Dependencies {
+impl<V, P: Implementable<A, V>> Implementable<A, V> for Transform<P> {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         self.plan.dependencies()
     }
 
@@ -53,10 +53,10 @@ impl<P: Implementable> Implementable for Transform<P> {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         let (relation, mut shutdown_handle) =

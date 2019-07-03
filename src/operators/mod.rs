@@ -11,26 +11,26 @@ use differential_dataflow::operators::arrange::{Arrange, Arranged};
 use differential_dataflow::trace::{cursor::Cursor, BatchReader};
 use differential_dataflow::{AsCollection, Collection};
 
-use crate::{TraceValHandle, Value};
+use crate::TraceValHandle;
 
 /// Provides the `cardinality_one` method.
-pub trait CardinalityOne<S: Scope> {
+pub trait CardinalityOne<S: Scope, V> {
     /// Ensures that only a single value per eid exists within an
     /// attribute, by retracting any previous values upon new
     /// updates. Therefore this stream does not expect explicit
     /// retractions.
-    fn cardinality_one(&self) -> Collection<S, (Value, Value), isize>;
+    fn cardinality_one(&self) -> Collection<S, (V, V), isize>;
 }
 
-impl<S> CardinalityOne<S> for Collection<S, (Value, Value), isize>
+impl<S, V> CardinalityOne<S, V> for Collection<S, (V, V), isize>
 where
     S: Scope,
     S::Timestamp: Lattice + Ord,
 {
-    fn cardinality_one(&self) -> Collection<S, (Value, Value), isize> {
+    fn cardinality_one(&self) -> Collection<S, (V, V), isize> {
         use differential_dataflow::hashable::Hashable;
 
-        let arranged: Arranged<S, TraceValHandle<Value, Value, S::Timestamp, isize>> =
+        let arranged: Arranged<S, TraceValHandle<V, V, S::Timestamp, isize>> =
             self.arrange();
 
         arranged
@@ -65,7 +65,7 @@ where
                 }
             })
             .map(
-                |((e, next_v), t, diff): ((Value, Value), S::Timestamp, isize)| {
+                |((e, next_v), t, diff): ((V, V), S::Timestamp, isize)| {
                     (e, (next_v, t, diff))
                 },
             )

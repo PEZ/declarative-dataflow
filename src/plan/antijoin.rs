@@ -15,7 +15,7 @@ use crate::{CollectionRelation, Implemented, Relation, ShutdownHandle, Var, Vari
 /// variables. Throws if the sources are not union-compatible, i.e. bind
 /// all of the same variables in the same order.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Antijoin<P1: Implementable, P2: Implementable> {
+pub struct Antijoin<V, P1: Implementable<A, V>, P2: Implementable<A, V>> {
     /// TODO
     pub variables: Vec<Var>,
     /// Plan for the left input.
@@ -24,8 +24,8 @@ pub struct Antijoin<P1: Implementable, P2: Implementable> {
     pub right_plan: Box<P2>,
 }
 
-impl<P1: Implementable, P2: Implementable> Implementable for Antijoin<P1, P2> {
-    fn dependencies(&self) -> Dependencies {
+impl<V, P1: Implementable<A, V>, P2: Implementable<A, V>> Implementable<A, V> for Antijoin<P1, P2> {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         Dependencies::merge(
             self.left_plan.dependencies(),
             self.right_plan.dependencies(),
@@ -49,10 +49,10 @@ impl<P1: Implementable, P2: Implementable> Implementable for Antijoin<P1, P2> {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         let mut shutdown_handle = ShutdownHandle::empty();

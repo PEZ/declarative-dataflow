@@ -15,15 +15,15 @@ use crate::{CollectionRelation, Implemented, Relation, ShutdownHandle, Var, Vari
 /// responsible to ensure that the sources are union-compatible
 /// (i.e. bind all of the same variables in the same order).
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Serialize, Deserialize)]
-pub struct Union<P: Implementable> {
+pub struct Union<P: Implementable<A, V>> {
     /// TODO
     pub variables: Vec<Var>,
     /// Plan for the data source.
     pub plans: Vec<P>,
 }
 
-impl<P: Implementable> Implementable for Union<P> {
-    fn dependencies(&self) -> Dependencies {
+impl<P: Implementable<A, V>> Implementable<A, V> for Union<P> {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         let mut dependencies = Dependencies::none();
 
         for plan in self.plans.iter() {
@@ -45,10 +45,10 @@ impl<P: Implementable> Implementable for Union<P> {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         use differential_dataflow::AsCollection;

@@ -228,8 +228,8 @@ fn selection_set_to_paths(
     levels
 }
 
-impl Implementable for GraphQl {
-    fn dependencies(&self) -> Dependencies {
+impl Implementable<A, V> for GraphQl {
+    fn dependencies(&self) -> Dependencies<V::Aid> {
         let mut dependencies = Dependencies::none();
 
         for path in self.paths.iter() {
@@ -244,10 +244,10 @@ impl Implementable for GraphQl {
         nested: &mut Iterative<'b, S, u64>,
         local_arrangements: &VariableMap<Iterative<'b, S, u64>>,
         context: &mut I,
-    ) -> (Implemented<'b, S>, ShutdownHandle)
+    ) -> (Implemented<'b, S, V>, ShutdownHandle)
     where
         T: Timestamp + Lattice,
-        I: ImplContext<T>,
+        I: ImplContext<A, V, T>,
         S: Scope<Timestamp = T>,
     {
         let parsed = Pull {
